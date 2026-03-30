@@ -223,11 +223,14 @@ class _Kernels(Kernels):
         kernel_name = create_session.kernel.name
         if kernel_name is not None:
             # launch a new ("internal") kernel
-            kernel_cwd = Path(create_session.path).parent
-            while True:
-                if kernel_cwd.is_dir():
-                    break
-                kernel_cwd = kernel_cwd.parent
+            if create_session.cwd:
+                kernel_cwd = Path(create_session.cwd).expanduser().resolve()
+            else:
+                kernel_cwd = Path(create_session.path).parent
+                while True:
+                    if kernel_cwd.is_dir():
+                        break
+                    kernel_cwd = kernel_cwd.parent
             kernelspec_path = anyio.Path(find_kernelspec(kernel_name))
             if self.kernels_config.wait_for_kernelspec:
                 while True:
