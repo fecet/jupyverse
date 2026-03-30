@@ -11,6 +11,7 @@ class CreateSession(BaseModel):
     name: str
     path: str
     type: str
+    cwd: str | None = None
 
 
 class Kernel(BaseModel):
