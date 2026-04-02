@@ -56,6 +56,7 @@ class KernelDriver:
         self.comm_messages: StapledObjectStream = StapledObjectStream(
             *create_memory_object_stream[dict](max_buffer_size=1024)
         )
+        self._widget_states: dict[str, dict[str, Any]] = {}
         self.stopped_event = Event()
 
     async def restart(self, startup_timeout: float = float("inf")) -> None:
@@ -107,6 +108,11 @@ class KernelDriver:
             msg = deserialize_message(msg_list, change_str_to_date=True)
             parent_id = msg["parent_header"].get("msg_id")
             if msg["msg_type"] in ("comm_open", "comm_msg"):
+                if msg["msg_type"] == "comm_open":
+                    target = msg["content"].get("target_name")
+                    if target == "jupyter.widget":
+                        data = msg["content"].get("data", {})
+                        self._widget_states[msg["content"]["comm_id"]] = data.get("state", {})
                 await self.comm_messages.send(msg)
             elif parent_id in self.execute_requests.keys():
                 await self.execute_requests[parent_id]["iopub_msg"].send(msg)
@@ -158,7 +164,7 @@ class KernelDriver:
                 except TimeoutError:
                     error_message = f"Kernel didn't respond in {timeout} seconds"
                     raise RuntimeError(error_message)
-                await self._handle_outputs(ycell["outputs"], msg)
+                await self._handle_outputs(ycell["outputs"], msg, ydoc=ycell.doc)
                 if (
                     msg["header"]["msg_type"] == "status"
                     and msg["content"]["execution_state"] == "idle"
@@ -180,7 +186,7 @@ class KernelDriver:
     async def _handle_iopub(self, msg_id: str, ycell: Map) -> None:
         while True:
             msg = await self.execute_requests[msg_id]["iopub_msg"].receive()
-            await self._handle_outputs(ycell["outputs"], msg)
+            await self._handle_outputs(ycell["outputs"], msg, ydoc=ycell.doc)
             if (
                 msg["header"]["msg_type"] == "status"
                 and msg["content"]["execution_state"] == "idle"
@@ -238,7 +244,7 @@ class KernelDriver:
                     return
             new_timeout = deadline_to_timeout(deadline)
 
-    async def _handle_outputs(self, outputs: Array, msg: dict[str, Any]):
+    async def _handle_outputs(self, outputs: Array, msg: dict[str, Any], ydoc: Any = None):
         msg_type = msg["header"]["msg_type"]
         content = msg["content"]
         if msg_type == "stream":
@@ -274,6 +280,13 @@ class KernelDriver:
                 }
                 if msg_type == "execute_result":
                     output["execution_count"] = content["execution_count"]
+                # Embed standard ipywidgets state in notebook metadata
+                # so model and output arrive in the same YDoc transaction
+                widget_view = content["data"].get("application/vnd.jupyter.widget-view+json")
+                if widget_view and ydoc is not None:
+                    model_id = widget_view.get("model_id")
+                    if model_id and model_id in self._widget_states:
+                        self._embed_widget_state(ydoc, model_id)
                 outputs.append(output)
         elif msg_type == "error":
             outputs.append(
@@ -284,6 +297,27 @@ class KernelDriver:
                     "traceback": content["traceback"],
                 }
             )
+
+
+    def _embed_widget_state(self, ydoc: Any, model_id: str) -> None:
+        """Write widget state to notebook metadata (same YDoc transaction as outputs)."""
+        state = self._widget_states[model_id]
+        try:
+            meta = ydoc.get("meta", type=Map)
+        except Exception:
+            return
+        ws_key = "application/vnd.jupyter.widget-state+json"
+        if "widgets" not in meta:
+            meta["widgets"] = {}
+        widgets = meta["widgets"]
+        if ws_key not in widgets:
+            widgets[ws_key] = {"version_major": 2, "state": {}}
+        widgets[ws_key]["state"][model_id] = {
+            "model_name": state.get("_model_name", ""),
+            "model_module": state.get("_model_module", ""),
+            "model_module_version": state.get("_model_module_version", ""),
+            "state": state,
+        }
 
 
 class Comm:
