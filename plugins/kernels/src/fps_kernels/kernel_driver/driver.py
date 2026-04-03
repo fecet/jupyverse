@@ -243,7 +243,7 @@ class KernelDriver:
         content = msg["content"]
         if msg_type == "stream":
             with outputs.doc.transaction():
-                if (not outputs) or (outputs[-1]["name"] != content["name"]):  # type: ignore
+                if (not outputs) or outputs[-1].get("output_type") != "stream" or (outputs[-1]["name"] != content["name"]):  # type: ignore
                     outputs.append(
                         Map(
                             {
@@ -257,7 +257,27 @@ class KernelDriver:
                     text = outputs[-1]["text"]
                     text += content["text"]  # type: ignore
         elif msg_type in ("display_data", "execute_result"):
-            if "application/vnd.jupyter.ywidget-view+json" in content["data"]:
+            relay_error = content["data"].get("application/vnd.mirari.relay-error+json")
+            relay_result = content["data"].get("application/vnd.mirari.relay-execute-result+json")
+            if relay_error is not None:
+                outputs.append(
+                    {
+                        "ename": relay_error["ename"],
+                        "evalue": relay_error["evalue"],
+                        "output_type": "error",
+                        "traceback": relay_error["traceback"],
+                    }
+                )
+            elif relay_result is not None:
+                output = {
+                    "data": relay_result["data"],
+                    "metadata": relay_result.get("metadata", {}),
+                    "output_type": "execute_result",
+                }
+                if relay_result.get("execution_count") is not None:
+                    output["execution_count"] = relay_result["execution_count"]
+                outputs.append(output)
+            elif "application/vnd.jupyter.ywidget-view+json" in content["data"]:
                 # this is a collaborative widget
                 model_id = content["data"]["application/vnd.jupyter.ywidget-view+json"]["model_id"]
                 if self.yjs is not None and self.yjs.widgets is not None:  # type: ignore
